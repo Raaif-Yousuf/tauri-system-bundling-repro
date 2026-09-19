@@ -1,0 +1,75 @@
+name: repro
+
+on:
+  workflow_dispatch:
+    inputs:
+      fix_ref:
+        description: branch of Raaif-Yousuf/tauri with the fix
+        default: fix/bundler-system-profile-tools-dir
+
+jobs:
+  minimal:
+    runs-on: windows-latest
+    steps:
+      - name: makensis from a user profile vs from the SYSTEM profile path
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\nsis.zip"
+          Invoke-WebRequest https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip -OutFile $zip
+          $user = "$env:LOCALAPPDATA\tauri"
+          $system = "$env:WINDIR\System32\config\systemprofile\AppData\Local\tauri"
+          foreach ($d in @($user, $system)) {
+            New-Item -ItemType Directory -Force $d | Out-Null
+            Expand-Archive $zip $d -Force
+            Rename-Item "$d\nsis-3.11" NSIS
+          }
+          foreach ($d in @($user, $system)) {
+            Write-Host "== $d\NSIS\makensis.exe -VERSION"
+            & "$d\NSIS\makensis.exe" -VERSION
+            Write-Host "exit code: $LASTEXITCODE"
+          }
+          Write-Host "== what a 32-bit process sees at that path"
+          Write-Host "exists (64-bit view): $(Test-Path "$system\NSIS\Bin\makensis.exe")"
+          Write-Host "exists in SysWOW64:   $(Test-Path "$env:WINDIR\SysWOW64\config\systemprofile\AppData\Local\tauri\NSIS\Bin\makensis.exe")"
+
+  bundle-as-system:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [upstream-dev, fix]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.variant == 'fix' && 'Raaif-Yousuf/tauri' || 'tauri-apps/tauri' }}
+          ref: ${{ matrix.variant == 'fix' && inputs.fix_ref || 'dev' }}
+          path: tauri
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build the CLI
+        shell: pwsh
+        working-directory: tauri
+        run: |
+          git log -1 --oneline
+          cargo build -p tauri-cli
+      - name: create an app and compile it as the runner user
+        shell: pwsh
+        run: |
+          npx --yes create-tauri-app@latest demo --manager cargo --template vanilla --yes
+          cd demo
+          & "$env:GITHUB_WORKSPACE\tauri\target\debug\cargo-tauri.exe" build --no-bundle
+      - name: bundle as SYSTEM
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://download.sysinternals.com/files/PSTools.zip -OutFile "$env:RUNNER_TEMP\pstools.zip"
+          Expand-Archive "$env:RUNNER_TEMP\pstools.zip" "$env:RUNNER_TEMP\pstools"
+          $cli = "$env:GITHUB_WORKSPACE\tauri\target\debug\cargo-tauri.exe"
+          $app = "$env:GITHUB_WORKSPACE\demo"
+          $log = "$env:RUNNER_TEMP\bundle.log"
+          $cmd = "set CARGO_HOME=$env:USERPROFILE\.cargo&& set RUSTUP_HOME=$env:USERPROFILE\.rustup&& set PATH=$env:USERPROFILE\.cargo\bin;%PATH%&& cd /d $app&& whoami&& `"$cli`" build --bundles nsis,msi > `"$log`" 2>&1"
+          & "$env:RUNNER_TEMP\pstools\PsExec64.exe" -accepteula -nobanner -s cmd /c $cmd
+          $code = $LASTEXITCODE
+          Get-Content $log
+          Write-Host "exit code as SYSTEM: $code"
+          Get-ChildItem -Recurse "$app\src-tauri\target\release\bundle" -Include *.exe,*.msi -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "built: $($_.FullName)" }
+          Get-ChildItem "$env:WINDIR\System32\config\systemprofile\AppData\Local\tauri" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "SYSTEM cache: $($_.Name)" }
+          Get-ChildItem "$app\src-tauri\target\release\.tauri" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "project .tauri: $($_.Name)" }
