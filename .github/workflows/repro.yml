@@ -57,6 +57,7 @@ jobs:
           npx --yes create-tauri-app@latest demo --manager cargo --template vanilla --yes
           cd demo
           & "$env:GITHUB_WORKSPACE\tauri\target\debug\cargo-tauri.exe" build --no-bundle
+          & "$env:GITHUB_WORKSPACE\tauri\target\debug\cargo-tauri.exe" info
       - name: bundle as SYSTEM
         shell: pwsh
         run: |
@@ -65,8 +66,20 @@ jobs:
           $cli = "$env:GITHUB_WORKSPACE\tauri\target\debug\cargo-tauri.exe"
           $app = "$env:GITHUB_WORKSPACE\demo"
           $log = "$env:RUNNER_TEMP\bundle.log"
-          $cmd = "set CARGO_HOME=$env:USERPROFILE\.cargo&& set RUSTUP_HOME=$env:USERPROFILE\.rustup&& set PATH=$env:USERPROFILE\.cargo\bin;%PATH%&& cd /d $app&& whoami&& `"$cli`" build --bundles nsis,msi > `"$log`" 2>&1"
-          & "$env:RUNNER_TEMP\pstools\PsExec64.exe" -accepteula -nobanner -s cmd /c $cmd
+          $bat = "$env:RUNNER_TEMP\bundle.cmd"
+          @(
+            '@echo off',
+            "set CARGO_HOME=$env:USERPROFILE\.cargo",
+            "set RUSTUP_HOME=$env:USERPROFILE\.rustup",
+            "set PATH=$env:USERPROFILE\.cargo\bin;%PATH%",
+            "cd /d `"$app`"",
+            'whoami',
+            'echo LOCALAPPDATA=%LOCALAPPDATA%',
+            "`"$cli`" build --bundles nsis,msi > `"$log`" 2>&1",
+            'exit /b %ERRORLEVEL%'
+          ) | Set-Content -Encoding ascii $bat
+          Get-Content $bat
+          & "$env:RUNNER_TEMP\pstools\PsExec64.exe" -accepteula -nobanner -s cmd /c $bat
           $code = $LASTEXITCODE
           Get-Content $log
           Write-Host "exit code as SYSTEM: $code"
